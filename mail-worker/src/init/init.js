@@ -29,8 +29,111 @@ const dbInit = {
 		await this.v2_8DB(c);
 		await this.v2_9DB(c);
 		await this.v3_0DB(c);
+		await this.v3_1DB(c);
 		await settingService.refresh(c);
 		return c.text('success');
+	},
+
+	async v3_1DB(c) {
+		const recipientTable = await c.env.db.prepare(`
+			SELECT name
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'email_recipient'
+			LIMIT 1
+		`).first();
+
+		const statements = [
+			c.env.db.prepare(`
+				CREATE TABLE IF NOT EXISTS email_recipient (
+					email_id INTEGER NOT NULL,
+					address TEXT NOT NULL COLLATE NOCASE,
+					PRIMARY KEY (email_id, address)
+				) WITHOUT ROWID
+			`),
+			c.env.db.prepare(`
+				CREATE INDEX IF NOT EXISTS idx_email_recipient_address_email_id
+				ON email_recipient(address COLLATE NOCASE, email_id DESC)
+			`),
+			c.env.db.prepare(`
+				CREATE TRIGGER IF NOT EXISTS trg_email_recipient_insert
+				AFTER INSERT ON email
+				BEGIN
+					INSERT OR IGNORE INTO email_recipient (email_id, address)
+					SELECT
+						NEW.email_id,
+						trim(json_extract(recipient_item.value, '$.address'))
+					FROM json_each(
+						CASE
+							WHEN json_valid(NEW.recipient) THEN
+								CASE
+									WHEN json_type(NEW.recipient) = 'array' THEN NEW.recipient
+									ELSE '[]'
+								END
+							ELSE '[]'
+						END
+					) AS recipient_item
+					WHERE recipient_item.type = 'object'
+						AND json_type(recipient_item.value, '$.address') = 'text'
+						AND trim(json_extract(recipient_item.value, '$.address')) <> '';
+				END
+			`),
+			c.env.db.prepare(`
+				CREATE TRIGGER IF NOT EXISTS trg_email_recipient_update
+				AFTER UPDATE OF recipient, email_id ON email
+				BEGIN
+					DELETE FROM email_recipient WHERE email_id = OLD.email_id;
+					INSERT OR IGNORE INTO email_recipient (email_id, address)
+					SELECT
+						NEW.email_id,
+						trim(json_extract(recipient_item.value, '$.address'))
+					FROM json_each(
+						CASE
+							WHEN json_valid(NEW.recipient) THEN
+								CASE
+									WHEN json_type(NEW.recipient) = 'array' THEN NEW.recipient
+									ELSE '[]'
+								END
+							ELSE '[]'
+						END
+					) AS recipient_item
+					WHERE recipient_item.type = 'object'
+						AND json_type(recipient_item.value, '$.address') = 'text'
+						AND trim(json_extract(recipient_item.value, '$.address')) <> '';
+				END
+			`),
+			c.env.db.prepare(`
+				CREATE TRIGGER IF NOT EXISTS trg_email_recipient_delete
+				AFTER DELETE ON email
+				BEGIN
+					DELETE FROM email_recipient WHERE email_id = OLD.email_id;
+				END
+			`)
+		];
+
+		if (!recipientTable) {
+			statements.push(c.env.db.prepare(`
+				INSERT OR IGNORE INTO email_recipient (email_id, address)
+				SELECT
+					email.email_id,
+					trim(json_extract(recipient_item.value, '$.address'))
+				FROM email
+				JOIN json_each(
+					CASE
+						WHEN json_valid(email.recipient) THEN
+							CASE
+								WHEN json_type(email.recipient) = 'array' THEN email.recipient
+								ELSE '[]'
+							END
+						ELSE '[]'
+					END
+				) AS recipient_item
+				WHERE recipient_item.type = 'object'
+					AND json_type(recipient_item.value, '$.address') = 'text'
+					AND trim(json_extract(recipient_item.value, '$.address')) <> ''
+			`));
+		}
+
+		await c.env.db.batch(statements);
 	},
 
 	async v3_0DB(c) {

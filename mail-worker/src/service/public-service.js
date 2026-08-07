@@ -15,11 +15,27 @@ import email from '../entity/email';
 import userService from './user-service';
 import KvConst from '../const/kv-const';
 
+let recipientIndexReady = false;
+
+async function hasRecipientIndex(c) {
+	if (recipientIndexReady) return true;
+
+	const table = await c.env.db.prepare(`
+		SELECT 1
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'email_recipient'
+		LIMIT 1
+	`).first();
+
+	recipientIndexReady = Boolean(table);
+	return recipientIndexReady;
+}
+
 const publicService = {
 
 	async emailList(c, params) {
 
-		let { toEmail, content, subject, sendName, sendEmail, timeSort, num, size, type , isDel } = params
+		let { toEmail, recipientAddress, content, subject, sendName, sendEmail, timeSort, num, size, type , isDel } = params
 
 		const query = orm(c).select({
 				emailId: email.emailId,
@@ -55,6 +71,35 @@ const publicService = {
 
 		if (toEmail) {
 			conditions.push(sql`${email.toEmail} COLLATE NOCASE LIKE ${toEmail}`)
+		}
+
+		if (typeof recipientAddress === 'string' && recipientAddress.trim()) {
+			const normalizedRecipientAddress = recipientAddress.trim();
+
+			if (await hasRecipientIndex(c)) {
+				conditions.push(sql`${email.emailId} IN (
+					SELECT recipient_index.email_id
+					FROM email_recipient AS recipient_index
+					WHERE recipient_index.address = ${normalizedRecipientAddress} COLLATE NOCASE
+				)`)
+			} else {
+				conditions.push(sql`EXISTS (
+					SELECT 1
+					FROM json_each(
+						CASE
+							WHEN json_valid(${email.recipient}) THEN
+								CASE
+									WHEN json_type(${email.recipient}) = 'array' THEN ${email.recipient}
+									ELSE '[]'
+								END
+							ELSE '[]'
+						END
+					) AS recipient_item
+					WHERE recipient_item.type = 'object'
+						AND json_type(recipient_item.value, '$.address') = 'text'
+						AND trim(json_extract(recipient_item.value, '$.address')) = ${normalizedRecipientAddress} COLLATE NOCASE
+				)`)
+			}
 		}
 
 		if (sendEmail) {
