@@ -93,7 +93,18 @@ const publicService = {
 			query.orderBy(desc(email.emailId));
 		}
 
-		return query.limit(size).offset(num);
+		const list = await query.limit(size).offset(num);
+
+		return list.map(item => {
+			try {
+				if (item.recipient) item.recipient = JSON.parse(item.recipient);
+				if (item.cc) item.cc = JSON.parse(item.cc);
+				if (item.bcc) item.bcc = JSON.parse(item.bcc);
+			} catch (e) {
+				console.error('Failed to parse email JSON fields:', e);
+			}
+			return item;
+		});
 
 	},
 
