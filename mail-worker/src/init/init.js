@@ -35,13 +35,6 @@ const dbInit = {
 	},
 
 	async v3_1DB(c) {
-		const recipientTable = await c.env.db.prepare(`
-			SELECT name
-			FROM sqlite_master
-			WHERE type = 'table' AND name = 'email_recipient'
-			LIMIT 1
-		`).first();
-
 		const statements = [
 			c.env.db.prepare(`
 				CREATE TABLE IF NOT EXISTS email_recipient (
@@ -49,10 +42,6 @@ const dbInit = {
 					address TEXT NOT NULL COLLATE NOCASE,
 					PRIMARY KEY (email_id, address)
 				) WITHOUT ROWID
-			`),
-			c.env.db.prepare(`
-				CREATE INDEX IF NOT EXISTS idx_email_recipient_address_email_id
-				ON email_recipient(address COLLATE NOCASE, email_id DESC)
 			`),
 			c.env.db.prepare(`
 				CREATE TRIGGER IF NOT EXISTS trg_email_recipient_insert
@@ -107,11 +96,9 @@ const dbInit = {
 				BEGIN
 					DELETE FROM email_recipient WHERE email_id = OLD.email_id;
 				END
-			`)
-		];
-
-		if (!recipientTable) {
-			statements.push(c.env.db.prepare(`
+			`),
+			// 每次都执行幂等回填，既支持重复初始化，也能修复中断或导入造成的缺失索引。
+			c.env.db.prepare(`
 				INSERT OR IGNORE INTO email_recipient (email_id, address)
 				SELECT
 					email.email_id,
@@ -130,8 +117,12 @@ const dbInit = {
 				WHERE recipient_item.type = 'object'
 					AND json_type(recipient_item.value, '$.address') = 'text'
 					AND trim(json_extract(recipient_item.value, '$.address')) <> ''
-			`));
-		}
+			`),
+			c.env.db.prepare(`
+				CREATE INDEX IF NOT EXISTS idx_email_recipient_address_email_id
+				ON email_recipient(address COLLATE NOCASE, email_id DESC)
+			`)
+		];
 
 		await c.env.db.batch(statements);
 	},
